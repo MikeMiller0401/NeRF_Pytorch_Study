@@ -151,6 +151,7 @@ class NeRF(nn.Module):
 
 # Ray helpers
 def get_rays(H, W, K, c2w):
+    # 与下面的get_rays_np()函数基本一致，只是需要转置操作
     i, j = torch.meshgrid(torch.linspace(0, W-1, W), torch.linspace(0, H-1, H))  # pytorch's meshgrid has indexing='ij'
     i = i.t()
     j = j.t()
@@ -163,6 +164,9 @@ def get_rays(H, W, K, c2w):
 
 
 def get_rays_np(H, W, K, c2w):
+    # H，W，K分别为图像的高宽和相机的内参矩阵
+    # c2w为相机到世界坐标系的变换矩阵
+    # 函数返回射线的原点和方向
     i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')
     dirs = np.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -np.ones_like(i)], -1)
     # Rotate ray directions from camera frame to the world frame

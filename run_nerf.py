@@ -53,7 +53,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
         embedded_dirs = embeddirs_fn(input_dirs_flat)  # 对输入方向进行编码
         embedded = torch.cat([embedded, embedded_dirs], -1)  # 对输入方向进行编码
 
-    outputs_flat = batchify(fn, netchunk)(embedded) # 调用batchify进行批处理，并将每个批次输入到网络函数中进行计算。
+    outputs_flat = batchify(fn, netchunk)(embedded)  # 调用batchify进行批处理，并将每个批次输入到网络函数中进行计算。
     outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])  # 将网络函数的输出进行重塑，以恢复其原始的形状
     return outputs
 
@@ -190,6 +190,7 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
     return rgbs, disps
 
 
+# 初始化nerf网络
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
@@ -268,12 +269,12 @@ def create_nerf(args):
         'network_query_fn': network_query_fn,
         'perturb': args.perturb,  # 扰动
         'N_importance': args.N_importance,  # 每条光线上细采样点的数量
-        'network_fine': model_fine,   # 论文中的 精细网络
+        'network_fine': model_fine,  # 论文中的 精细网络
         'N_samples': args.N_samples,  # 每条光线上粗采样点的数量
-        'network_fn': model, # 论文中的 粗网络
-        'use_viewdirs': args.use_viewdirs, # 是否使用视点方向，影响到神经网络是否输出颜色
-        'white_bkgd': args.white_bkgd, # 如果为 True 将输入的 png 图像的透明部分转换成白色
-        'raw_noise_std': args.raw_noise_std, # 归一化密度
+        'network_fn': model,  # 论文中的 粗网络
+        'use_viewdirs': args.use_viewdirs,  # 是否使用视点方向，影响到神经网络是否输出颜色
+        'white_bkgd': args.white_bkgd,  # 如果为 True 将输入的 png 图像的透明部分转换成白色
+        'raw_noise_std': args.raw_noise_std,  # 归一化密度
     }
 
     # NDC only good for LLFF-style forward facing data # NDC 空间，只对前向场景有效，见于论文附录C：NDC ray space derivation
@@ -562,7 +563,6 @@ def config_parser():
 
 
 def train():
-
     # 设置参数
     parser = config_parser()
     args = parser.parse_args()
@@ -572,10 +572,18 @@ def train():
     print(args.expname)
     #
 
-    # Load data
-    # 加载数据集，并根据数据类型进行不同的初始化
-    K = None
+    #########################################
+    # 1、加载数据集，并根据数据类型进行不同的初始化 #
+    #########################################
+    K = None  # K为内参矩阵
     if args.dataset_type == 'llff':
+        # images[N, H, W, 3]
+        # poses[N, 3, 4]
+        # bds[N, 2] 边界
+        # render_poses[N_vies, 3, 5] 渲染视频所需要的视角
+        # hwf 高、宽、焦距
+        # i_test, i_train, i_val 训练测试样本的索引
+
         images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
@@ -589,11 +597,14 @@ def train():
             print('Auto LLFF holdout,', args.llffhold)
             i_test = np.arange(images.shape[0])[::args.llffhold]
 
+        # 验证集和测试集相同
         i_val = i_test
+        # 剩下的部分当作训练集
         i_train = np.array([i for i in np.arange(int(images.shape[0])) if
                             (i not in i_test and i not in i_val)])
 
         print('DEFINING BOUNDS')
+        # 定义边界值
         if args.no_ndc:
             near = np.ndarray.min(bds) * .9
             far = np.ndarray.max(bds) * 1.
@@ -653,19 +664,18 @@ def train():
     H, W, focal = hwf
     H, W = int(H), int(W)
     hwf = [H, W, focal]
-
+    # 构造针孔相机的内参矩阵K
     if K is None:
-        # 构造针孔相机的内参矩阵K
         K = np.array([
             [focal, 0, 0.5 * W],
             [0, focal, 0.5 * H],
             [0, 0, 1]
         ])
-
+    # 构造渲染用的相机姿态render_poses
     if args.render_test:
         render_poses = np.array(poses[i_test])
 
-    # Create log dir and copy the config file
+    # 创建日志文件路径并将配置文件复制进入日志
     basedir = args.basedir
     expname = args.expname
     os.makedirs(os.path.join(basedir, expname), exist_ok=True)
@@ -679,10 +689,11 @@ def train():
         with open(f, 'w') as file:
             file.write(open(args.config, 'r').read())
 
-    # Create nerf model 创建nerf模型
+    ##################
+    # 2、初始化网络模型 #
+    ##################
+
     # render_kwargs_train：一个字典，包含了用于训练的各个参数值
-    # render_kwargs_test：
-    # start:
     # grad_vars: 整个网络的梯度变量
     # optimizer: 整个网络的优化器
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
@@ -699,6 +710,7 @@ def train():
     render_poses = torch.Tensor(render_poses).to(device)
 
     # Short circuit if only rendering out from trained model
+    # 只渲染并生成视频
     if args.render_only:
         print('RENDER ONLY')
         with torch.no_grad():
@@ -721,20 +733,28 @@ def train():
 
             return
 
+    #############
+    # 3、光线生成 #
+    #############
+
     # Prepare raybatch tensor if batching random rays
-    N_rand = args.N_rand
-    use_batching = not args.no_batching
+    N_rand = args.N_rand  # 开始读取光线以及光线对应的像素值
+    use_batching = not args.no_batching  # 是否以批处理的形式生成光线
     if use_batching:
         # For random ray batching
+        # 是否从多个角度进行光线投射，核心在get_rays_np()函数，位于run_nerf-helpers 165中
         print('get rays')
+        # get_rays_np()会返回光线的坐标ro和方向rd
         rays = np.stack([get_rays_np(H, W, K, p) for p in poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
         print('done, concats')
+        # 并入RGB信息，并进行变换
         rays_rgb = np.concatenate([rays, images[:, None]], 1)  # [N, ro+rd+rgb, H, W, 3]
         rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])  # [N, H, W, ro+rd+rgb, 3]
         rays_rgb = np.stack([rays_rgb[i] for i in i_train], 0)  # train images only
         rays_rgb = np.reshape(rays_rgb, [-1, 3, 3])  # [(N-1)*H*W, ro+rd+rgb, 3]
         rays_rgb = rays_rgb.astype(np.float32)
         print('shuffle rays')
+        # 打乱这个光束的顺序
         np.random.shuffle(rays_rgb)
 
         print('done')
@@ -747,6 +767,7 @@ def train():
     if use_batching:
         rays_rgb = torch.Tensor(rays_rgb).to(device)
 
+    # 迭代次数
     N_iters = 200000 + 1
     print('Begin')
     print('TRAIN views are', i_train)
@@ -756,18 +777,27 @@ def train():
     # Summary writers
     # writer = SummaryWriter(os.path.join(basedir, 'summaries', expname))
 
+    #############
+    # 4、开始训练 #
+    #############
+
     start = start + 1
     for i in trange(start, N_iters):
         time0 = time.time()
 
         # Sample random ray batch
+        # 分批加载光线，大小为 N_rand
         if use_batching:
             # Random over all images
             batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             batch = torch.transpose(batch, 0, 1)
-            batch_rays, target_s = batch[:2], batch[2]
+
+            # 将光线和对应的像素点颜色分离，得到batch_rays[ro+rd, 4096, 3]和目标的rgb颜色target_s[4096, 3]
+            batch_rays, target_s = batch[:2], batch[2]  # [2, B, 3]  [B, 3]
 
             i_batch += N_rand
+
+            # 经过一定批次的处理后，所有的图片都经过了一次。这时候要对数据打乱，重新再挑选
             if i_batch >= rays_rgb.shape[0]:
                 print("Shuffle data after an epoch!")
                 rand_idx = torch.randperm(rays_rgb.shape[0])
@@ -776,14 +806,16 @@ def train():
 
         else:
             # Random from one image
+            # 从所有的图像中随机选择一张图像用于训练
             img_i = np.random.choice(i_train)
             target = images[img_i]
             target = torch.Tensor(target).to(device)
             pose = poses[img_i, :3, :4]
 
             if N_rand is not None:
+                # 生成这张图像中每个像素点对应的光线的原点和方向
                 rays_o, rays_d = get_rays(H, W, K, torch.Tensor(pose))  # (H, W, 3), (H, W, 3)
-
+                # 生成每个像素点的笛卡尔坐标，前 precrop_iters 生成图像中心的像素坐标坐标
                 if i < args.precrop_iters:
                     dH = int(H // 2 * args.precrop_frac)
                     dW = int(W // 2 * args.precrop_frac)
@@ -808,16 +840,23 @@ def train():
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
         #####  Core optimization loop  #####
+        # chunk=4096,batch_rays[2,4096,3]
+        # 返回渲染出的一个batch的rgb，disp（视差图），acc（不透明度）和extras（其他信息）
+        # rgb shape [4096, 3]刚好可以和target_s 对应上
+        # disp shape 4096，对应4096个光束
+        # acc shape 4096， 对应4096个光束
+        # extras 是一个dict，含有5个元素 shape:[4096,64,4]
         rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
                                         verbose=i < 10, retraw=True,
                                         **render_kwargs_train)
 
         optimizer.zero_grad()
-        img_loss = img2mse(rgb, target_s)
-        trans = extras['raw'][..., -1]
+        img_loss = img2mse(rgb, target_s)  # 求RGB的MSE img_loss shape:[20,378,504,3]
+        trans = extras['raw'][..., -1]  # trans shape:[4096,64]
         loss = img_loss
-        psnr = mse2psnr(img_loss)
+        psnr = mse2psnr(img_loss)  # 计算PSNR shape:[1]
 
+        # 在extra里面的一个元素，求损失并加到整体损失上
         if 'rgb0' in extras:
             img_loss0 = img2mse(extras['rgb0'], target_s)
             loss = loss + img_loss0
@@ -852,6 +891,7 @@ def train():
 
         if i % args.i_video == 0 and i > 0:
             # Turn on testing mode
+            # reder_poses用来合成视频
             with torch.no_grad():
                 rgbs, disps = render_path(render_poses, hwf, K, args.chunk, render_kwargs_test)
             print('Done, saving', rgbs.shape, disps.shape)
@@ -866,6 +906,7 @@ def train():
             #     render_kwargs_test['c2w_staticcam'] = None
             #     imageio.mimwrite(moviebase + 'rgb_still.mp4', to8b(rgbs_still), fps=30, quality=8)
 
+        # 保存测试数据集
         if i % args.i_testset == 0 and i > 0:
             testsavedir = os.path.join(basedir, expname, 'testset_{:06d}'.format(i))
             os.makedirs(testsavedir, exist_ok=True)
