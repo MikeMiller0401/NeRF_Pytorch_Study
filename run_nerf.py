@@ -192,10 +192,11 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
+    # get_embedder(): 位置编码positional encoding
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
-    input_ch_views = 0
-    embeddirs_fn = None
+    input_ch_views = 0  # 初始化视角输入通道数为0
+    embeddirs_fn = None  # 初始化视角嵌入函数为None
     if args.use_viewdirs:
         embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
     output_ch = 5 if args.N_importance > 0 else 4
@@ -552,7 +553,13 @@ def train():
     parser = config_parser()
     args = parser.parse_args()
 
+    # debug用的参数，使用控制台需要删除
+    args.expname = "fern_test"
+    print(args.expname)
+    #
+
     # Load data
+    # 加载数据集，并根据数据类型进行不同的初始化
     K = None
     if args.dataset_type == 'llff':
         images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
@@ -628,11 +635,13 @@ def train():
         return
 
     # Cast intrinsics to right types
+    # 将相机内参转换为正确的类型，并根据输入参数设置相机内参矩阵K和渲染用的相机姿态render_poses
     H, W, focal = hwf
     H, W = int(H), int(W)
     hwf = [H, W, focal]
 
     if K is None:
+        # 构造针孔相机的内参矩阵K
         K = np.array([
             [focal, 0, 0.5 * W],
             [0, focal, 0.5 * H],
@@ -656,7 +665,12 @@ def train():
         with open(f, 'w') as file:
             file.write(open(args.config, 'r').read())
 
-    # Create nerf model
+    # Create nerf model 创建nerf模型
+    # render_kwargs_train：一个字典，包含了用于训练的各个参数值
+    # render_kwargs_test：
+    # start:
+    # grad_vars: 整个网络的梯度变量
+    # optimizer: 整个网络的优化器
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_nerf(args)
     global_step = start
 
