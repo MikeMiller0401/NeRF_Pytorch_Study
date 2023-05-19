@@ -12,6 +12,7 @@ to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
 
 # Positional encoding (section 5.1)
+# 位置编码
 class Embedder:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -197,6 +198,7 @@ def ndc_rays(H, W, focal, near, rays_o, rays_d):
 
 
 # Hierarchical sampling (section 5.2)
+# 分层体积采样
 def sample_pdf(bins, weights, N_samples, det=False, pytest=False):
     # Get pdf
     weights = weights + 1e-5 # prevent nans
