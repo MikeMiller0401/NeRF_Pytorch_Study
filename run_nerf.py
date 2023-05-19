@@ -47,13 +47,14 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
     embedded = embed_fn(inputs_flat)  # 嵌入操作可以将输入数据映射到一个低维的特征空间，用于提取输入数据的特征表示。
 
     if viewdirs is not None:
+        # 视图不为 None，即输入了视图方向，那么我们就应该考虑对视图方向作出处理，用以生成颜色
         input_dirs = viewdirs[:, None].expand(inputs.shape)
         input_dirs_flat = torch.reshape(input_dirs, [-1, input_dirs.shape[-1]])
-        embedded_dirs = embeddirs_fn(input_dirs_flat)
-        embedded = torch.cat([embedded, embedded_dirs], -1)
+        embedded_dirs = embeddirs_fn(input_dirs_flat)  # 对输入方向进行编码
+        embedded = torch.cat([embedded, embedded_dirs], -1)  # 对输入方向进行编码
 
-    outputs_flat = batchify(fn, netchunk)(embedded) # 调用batchify进行批处理
-    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])
+    outputs_flat = batchify(fn, netchunk)(embedded) # 调用batchify进行批处理，并将每个批次输入到网络函数中进行计算。
+    outputs = torch.reshape(outputs_flat, list(inputs.shape[:-1]) + [outputs_flat.shape[-1]])  # 将网络函数的输出进行重塑，以恢复其原始的形状
     return outputs
 
 
@@ -192,20 +193,26 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    # get_embedder(): 位置编码positional encoding
+    # 使用get_embedder函数获取位置编码器和输入通道数
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
     input_ch_views = 0  # 初始化视角输入通道数为0
     embeddirs_fn = None  # 初始化视角嵌入函数为None
-    if args.use_viewdirs:
-        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)
-    output_ch = 5 if args.N_importance > 0 else 4
-    skips = [4]
+    if args.use_viewdirs:  # 是否使用视角信息
+        embeddirs_fn, input_ch_views = get_embedder(args.multires_views, args.i_embed)  # 获取视角嵌入函数和视角输入通道数
+    output_ch = 5 if args.N_importance > 0 else 4  # 是否存在重要性采样
+    skips = [4]  # 定义跳跃连接层的索引
+
+    # 初始化MLP参数，具体结构可见于论文的fig.7
+    # D：MLP层数，默认8； W：MLP宽度，默认256；
+    # input_ch：输入通道数量，63； output_ch：输出通道数，4； skips： 跳跃连接层的索引列表
     model = NeRF(D=args.netdepth, W=args.netwidth,
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
+    # 模型中的梯度变量
     grad_vars = list(model.parameters())
 
+    # 根据args.N_importance沿每条射线额外采样的次数来决定是否创建一个model_fine网络来更加精细的采样和渲染
     model_fine = None
     if args.N_importance > 0:
         model_fine = NeRF(D=args.netdepth_fine, W=args.netwidth_fine,
@@ -213,12 +220,15 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
+    # 定义一个查询点的颜色和密度的匿名函数，用于查询网络（network_fn）并运行网络以生成输出
+    # 接受输入（inputs）、视角方向（viewdirs）和网络函数（network_fn）作为参数，并调用run_network()函数进行网络查询。
+    # 可以得到该点在该网络下的输出（[rgb,alpha]）
     network_query_fn = lambda inputs, viewdirs, network_fn: run_network(inputs, viewdirs, network_fn,
                                                                         embed_fn=embed_fn,
                                                                         embeddirs_fn=embeddirs_fn,
                                                                         netchunk=args.netchunk)
 
-    # Create optimizer
+    # Create optimizer 创建网络的优化器
     optimizer = torch.optim.Adam(params=grad_vars, lr=args.lrate, betas=(0.9, 0.999))
 
     start = 0
@@ -227,7 +237,7 @@ def create_nerf(args):
 
     ##########################
 
-    # Load checkpoints
+    # Load checkpoints 加载预训练点
     if args.ft_path is not None and args.ft_path != 'None':
         ckpts = [args.ft_path]
     else:
@@ -248,21 +258,25 @@ def create_nerf(args):
         if model_fine is not None:
             model_fine.load_state_dict(ckpt['network_fine_state_dict'])
 
-    ##########################
+    ################
+    # 整体初始化完成 #
+    ################
 
+    # 处理返回值
+    #
     render_kwargs_train = {
         'network_query_fn': network_query_fn,
-        'perturb': args.perturb,
-        'N_importance': args.N_importance,
-        'network_fine': model_fine,
-        'N_samples': args.N_samples,
-        'network_fn': model,
-        'use_viewdirs': args.use_viewdirs,
-        'white_bkgd': args.white_bkgd,
-        'raw_noise_std': args.raw_noise_std,
+        'perturb': args.perturb,  # 扰动
+        'N_importance': args.N_importance,  # 每条光线上细采样点的数量
+        'network_fine': model_fine,   # 论文中的 精细网络
+        'N_samples': args.N_samples,  # 每条光线上粗采样点的数量
+        'network_fn': model, # 论文中的 粗网络
+        'use_viewdirs': args.use_viewdirs, # 是否使用视点方向，影响到神经网络是否输出颜色
+        'white_bkgd': args.white_bkgd, # 如果为 True 将输入的 png 图像的透明部分转换成白色
+        'raw_noise_std': args.raw_noise_std, # 归一化密度
     }
 
-    # NDC only good for LLFF-style forward facing data
+    # NDC only good for LLFF-style forward facing data # NDC 空间，只对前向场景有效，见于论文附录C：NDC ray space derivation
     if args.dataset_type != 'llff' or args.no_ndc:
         print('Not ndc!')
         render_kwargs_train['ndc'] = False
