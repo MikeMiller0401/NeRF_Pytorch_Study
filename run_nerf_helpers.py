@@ -12,7 +12,7 @@ to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
 
 # Positional encoding (section 5.1)
-# 位置编码
+# get_embedder和Embedder：位置编码
 class Embedder:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
