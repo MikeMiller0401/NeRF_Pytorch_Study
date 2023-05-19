@@ -51,8 +51,8 @@ def get_embedder(multires, i=0):
         return nn.Identity(), 3
     
     embed_kwargs = {
-                'include_input' : True,
-                'input_dims' : 3,
+                'include_input' : True, #  如果为真，最终的编码结果包含原始坐标
+                'input_dims' : 3, #  输入给编码器的数据的维度
                 'max_freq_log2' : multires-1,
                 'num_freqs' : multires,
                 'log_sampling' : True,
