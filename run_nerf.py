@@ -44,7 +44,7 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024 * 64
     主要用于对输入数据应用网络函数，并对数据进行预处理和后处理，以适应网络的输入和输出要求。
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])  # 将输入数据展平，以便能够输入到网络函数中
-    embedded = embed_fn(inputs_flat)  # 嵌入操作可以将输入数据映射到一个低维的特征空间，用于提取输入数据的特征表示。
+    embedded = embed_fn(inputs_flat)  # 位置编码：将展平后的数据输入生成好的编码函数embed_fn()中。
 
     if viewdirs is not None:
         # 视图不为 None，即输入了视图方向，那么我们就应该考虑对视图方向作出处理，用以生成颜色
