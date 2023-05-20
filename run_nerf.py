@@ -194,7 +194,7 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    # 使用get_embedder函数获取位置编码器和输入通道数
+    # 使用get_embedder函数获取位置编码器embed_fn和输入mlp的坐标的维度
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
     input_ch_views = 0  # 初始化视角输入通道数为0
@@ -204,7 +204,7 @@ def create_nerf(args):
     output_ch = 5 if args.N_importance > 0 else 4  # 是否存在重要性采样
     skips = [4]  # 定义跳跃连接层的索引
 
-    # 初始化MLP参数，具体结构可见于论文的fig.7
+    # 初始化MLP参数，具体结构可见于论文的fig.7，调用NeRF类，返回模型
     # D：MLP层数，默认8； W：MLP宽度，默认256；
     # input_ch：输入通道数量，63； output_ch：输出通道数，4； skips： 跳跃连接层的索引列表
     model = NeRF(D=args.netdepth, W=args.netwidth,
@@ -579,34 +579,40 @@ def train():
     #########################################
     K = None  # K为内参矩阵
     if args.dataset_type == 'llff':
+
+        # 调用load_llff_data()函数载入数据
         # images[N, H, W, 3]
         # poses[N, 3, 4]
         # bds[N, 2] 边界
         # render_poses[N_vies, 3, 5] 渲染视频所需要的视角
-        # hwf 高、宽、焦距
         # i_test, i_train, i_val 训练测试样本的索引
-
         images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
                                                                   recenter=True, bd_factor=.75,
                                                                   spherify=args.spherify)
-        hwf = poses[0, :3, -1]
-        poses = poses[:, :3, :4]
+        hwf = poses[0, :3, -1]  # 使用hwf保存高、宽、焦距
+        poses = poses[:, :3, :4]  # 使用poses保存位姿
         print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
-        if not isinstance(i_test, list):
+
+        ###########划分数据集#############
+        if not isinstance(i_test, list): # 如果 i_test 不是列表类型，则将其转换为列表
             i_test = [i_test]
 
-        if args.llffhold > 0:
+        # args.llffhold：'will take every 1/N images as LLFF test set, paper uses 8'
+        # 将每 N 张图像作为 LLFF 测试集的采样间隔，默认为 8
+        if args.llffhold > 0: # 如果 args.llffhold 大于 0，则根据 args.llffhold 的值从头开始对图像进行采样，生成测试集的索引 i_test
             print('Auto LLFF holdout,', args.llffhold)
             i_test = np.arange(images.shape[0])[::args.llffhold]
-
         # 验证集和测试集相同
         i_val = i_test
         # 剩下的部分当作训练集
         i_train = np.array([i for i in np.arange(int(images.shape[0])) if
                             (i not in i_test and i not in i_val)])
+        ################################
 
         print('DEFINING BOUNDS')
-        # 定义边界值
+        # args.no_ndc：'do not use normalized device coordinates (set for non-forward facing scenes)'
+        # 是否使用标准化设备坐标（Normalized Device Coordinates），默认为 False。
+        # 如果设置为 True，表示不使用标准化设备坐标，适用于非正面朝向的场景。
         if args.no_ndc:
             near = np.ndarray.min(bds) * .9
             far = np.ndarray.max(bds) * 1.

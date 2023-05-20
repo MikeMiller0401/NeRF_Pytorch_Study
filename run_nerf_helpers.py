@@ -37,10 +37,10 @@ class Embedder:
             freq_bands = torch.linspace(2. ** 0., 2. ** max_freq, steps=N_freqs)
 
         # y(x) = (sin(1 * x), cos(1 * x), sin(2 * x), cos(2 * x), ... ,sin(512 * x), cos(512 * x))
-        for freq in freq_bands: # freq遍历freq_bands
-            for p_fn in self.kwargs['periodic_fns']:   # p_fn遍历self.kwargs，self.kwargs为[sin(), cos()]
+        for freq in freq_bands:  # freq遍历freq_bands
+            for p_fn in self.kwargs['periodic_fns']:  # p_fn遍历self.kwargs，self.kwargs为[sin(), cos()]
                 embed_fns.append(lambda x, p_fn=p_fn, freq=freq: p_fn(x * freq))  # 向embed_fns列表中添加一个函数p_fn(x * freq)
-                out_dim += d # out_dim累加
+                out_dim += d  # out_dim累加
 
         self.embed_fns = embed_fns
         self.out_dim = out_dim
@@ -74,56 +74,63 @@ def get_embedder(multires, i=0):
 # Model
 class NeRF(nn.Module):
     def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False):
-        """ 
+        """
         """
         super(NeRF, self).__init__()
         self.D = D
         self.W = W
-        self.input_ch = input_ch
-        self.input_ch_views = input_ch_views
-        self.skips = skips
+        self.input_ch = input_ch  # Position Encoding之后的 位置vector通道数（63）
+        self.input_ch_views = input_ch_views  # Position Encoding之后的 位姿的vector通道数（27）
+        self.skips = skips  # 在第4层有跳跃连接
         self.use_viewdirs = use_viewdirs
 
+        # 前8层的MLP实现：输入为63，输出为 256
         self.pts_linears = nn.ModuleList(
-            [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in
-                                        range(D - 1)])
+            [nn.Linear(input_ch, W)] +  # 第一层输入为63，输出63
+            [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D - 1)])  # 列表推导式：
+        # 如果当前层的索引 i 不在 self.skips 中，则输入通道数为256，输出通道数为256；否则，输入通道数为256+63，输出通道数为256
 
         ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
+        # 第九层的MLP：输入层为 位姿（27）+256，输出为128
         self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W // 2)])
 
         ### Implementation according to the paper
         # self.views_linears = nn.ModuleList(
         #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
 
+        # 若使用视角方向，需要定义几个额外的层
         if use_viewdirs:
-            self.feature_linear = nn.Linear(W, W)
-            self.alpha_linear = nn.Linear(W, 1)
-            self.rgb_linear = nn.Linear(W // 2, 3)
+            self.feature_linear = nn.Linear(W, W)  # 特征向量层：输入256，输出256
+            self.alpha_linear = nn.Linear(W, 1)   # 体密度：输入256，输出1
+            self.rgb_linear = nn.Linear(W // 2, 3)  # RGB层，输入128，输出3
         else:
             self.output_linear = nn.Linear(W, output_ch)
 
     def forward(self, x):
+        # 根据self.input_ch和self.input_ch_views将输入拆分为input_pts, input_views
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
         h = input_pts
+
+        # 使用pts_linears对input_pts进行逐层处理
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
-            h = F.relu(h)
-            if i in self.skips:
+            h = F.relu(h)  # 激活
+            if i in self.skips:  # 若i == skips（4），则将原始input_pts和h进行拼接
                 h = torch.cat([input_pts, h], -1)
 
-        if self.use_viewdirs:
+        if self.use_viewdirs:  # # 若使用视角方向
             alpha = self.alpha_linear(h)
             feature = self.feature_linear(h)
-            h = torch.cat([feature, input_views], -1)
+            h = torch.cat([feature, input_views], -1)  # 将特征向量feature和输入input_views进行拼接
 
             for i, l in enumerate(self.views_linears):
                 h = self.views_linears[i](h)
                 h = F.relu(h)
 
             rgb = self.rgb_linear(h)
-            outputs = torch.cat([rgb, alpha], -1)
+            outputs = torch.cat([rgb, alpha], -1)  # 输出rgb和体密度的拼接
         else:
-            outputs = self.output_linear(h)
+            outputs = self.output_linear(h)  # 直接输出h
 
         return outputs
 
