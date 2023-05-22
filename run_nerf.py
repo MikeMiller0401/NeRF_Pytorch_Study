@@ -850,7 +850,7 @@ def train():
         # 体渲染，调用render函数
         # chunk=4096,batch_rays[2,4096,3]
         # 返回渲染出的一个batch的rgb，disp（视差图），acc（不透明度）和extras（其他信息）
-        # rgb shape [4096, 3]刚好可以和target_s 对应上
+        # rgb shape [4096, 3]刚好可以和 target_s 对应上
         # disp shape 4096，对应4096个光束
         # acc shape 4096， 对应4096个光束
         # extras 是一个dict，含有5个元素 shape:[4096,64,4]
