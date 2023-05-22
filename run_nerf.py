@@ -908,6 +908,7 @@ def train():
             imageio.mimwrite(moviebase + 'disp.mp4', to8b(disps / np.max(disps)), fps=30, quality=8)
 
             # if args.use_viewdirs:
+            #
             #     render_kwargs_test['c2w_staticcam'] = render_poses[0][:3,:4]
             #     with torch.no_grad():
             #         rgbs_still, _ = render_path(render_poses, hwf, args.chunk, render_kwargs_test)
