@@ -181,15 +181,17 @@ def get_rays(H, W, K, c2w):
 
 
 def get_rays_np(H, W, K, c2w):
-    # H，W，K分别为图像的高宽和相机的内参矩阵
-    # c2w为相机到世界坐标系的变换矩阵
-    # 函数返回射线的原点和方向
-    i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')
-    dirs = np.stack([(i - K[0][2]) / K[0][0], -(j - K[1][2]) / K[1][1], -np.ones_like(i)], -1)
-    # Rotate ray directions from camera frame to the world frame
+    """
+    H，W，K分别为图像的高宽和相机的内参矩阵；c2w为相机坐标系到世界坐标系的变换矩阵（相机的外参矩阵）
+    返回值：光线的原点和方向
+    """
+    i, j = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing='xy')  # 返回大小[H*W]的i和j，i的每一行代表x轴坐标，j的每一行代表y轴坐标。
+    # 计算每个像素坐标相对于光心的单位方向，得到每个像素点关于光心o的方向dir
+    dirs = np.stack([(i - K[0][2]) / K[0][0], -(j - K[1][2]) / K[1][1], -np.ones_like(i)], -1)   #
+    # 将方向dir从相机坐标系转变为世界坐标系
     rays_d = np.sum(dirs[..., np.newaxis, :] * c2w[:3, :3],
                     -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
-    # Translate camera frame's origin to the world frame. It is the origin of all rays.
+    # 将原点从相机坐标系转变为世界坐标系，这也是这条光线上所有点的原点
     rays_o = np.broadcast_to(c2w[:3, -1], np.shape(rays_d))
     return rays_o, rays_d
 

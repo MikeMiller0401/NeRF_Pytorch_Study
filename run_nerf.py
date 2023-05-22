@@ -65,7 +65,7 @@ def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
     """
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i + chunk], **kwargs)
+        ret = render_rays(rays_flat[i:i + chunk], **kwargs)  # 关键函数render_rays()
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -79,7 +79,7 @@ def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
            near=0., far=1.,
            use_viewdirs=False, c2w_staticcam=None,
            **kwargs):
-    """Render rays
+    """Render rays 光线渲染
     Args:
       H: int. Height of image in pixels.
       W: int. Width of image in pixels.
@@ -110,36 +110,38 @@ def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
       extras: dict with everything returned by render_rays().包含render_rays()返回的所有内容的字典。
     """
     if c2w is not None:
-        # special case to render full image
+        # special case to render full image 获取光线的原点rays_o和单位方向rays_d
         rays_o, rays_d = get_rays(H, W, K, c2w)
     else:
         # use provided ray batch
         rays_o, rays_d = rays
 
-    if use_viewdirs:
+    if use_viewdirs:  # # 如果使用视图方向，根据光线的 ray_d 计算单位方向作为 view_dirs
         # provide ray directions as input
         viewdirs = rays_d
         if c2w_staticcam is not None:
             # special case to visualize effect of viewdirs
             rays_o, rays_d = get_rays(H, W, K, c2w_staticcam)
-        viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)
-        viewdirs = torch.reshape(viewdirs, [-1, 3]).float()
+        viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)  # 归一化
+        viewdirs = torch.reshape(viewdirs, [-1, 3]).float()  # 展平
 
     sh = rays_d.shape  # [..., 3]
     if ndc:
-        # for forward facing scenes
+        # for forward facing scenes 前向场景的情况
         rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
 
     # Create ray batch
     rays_o = torch.reshape(rays_o, [-1, 3]).float()
     rays_d = torch.reshape(rays_d, [-1, 3]).float()
 
+    # 生成光线的远近端，用于确定边界框，并将其聚合到 rays 中
     near, far = near * torch.ones_like(rays_d[..., :1]), far * torch.ones_like(rays_d[..., :1])
     rays = torch.cat([rays_o, rays_d, near, far], -1)
-    if use_viewdirs:
+    if use_viewdirs:  # 视图方向聚合到光线中
         rays = torch.cat([rays, viewdirs], -1)
 
     # Render and reshape
+    # 将计算出的ray_o、ray_d、near、far、viewdirs 等并入rays中后输入批处理函数batchify_rays() 61行
     all_ret = batchify_rays(rays, chunk, **kwargs)
     for k in all_ret:
         k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
@@ -303,14 +305,15 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
         weights: [num_rays, num_samples]. Weights assigned to each sampled color.
         depth_map: [num_rays]. Estimated distance to object.
     """
+    # 匿名函数raw2alpha 代表了体渲染公式中的 1−exp(−σ∗δ)
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
 
-    dists = z_vals[..., 1:] - z_vals[..., :-1]
+    dists = z_vals[..., 1:] - z_vals[..., :-1]  # 计算两点Z轴之间的距离
     dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
 
-    dists = dists * torch.norm(rays_d[..., None, :], dim=-1)
+    dists = dists * torch.norm(rays_d[..., None, :], dim=-1)    # 将 Z 轴之间的距离转换为实际距离
 
-    rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
+    rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3] 每个点的 RGB 值
     noise = 0.
     if raw_noise_std > 0.:
         noise = torch.randn(raw[..., 3].shape) * raw_noise_std
@@ -321,11 +324,12 @@ def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=F
             noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
             noise = torch.Tensor(noise)
 
-    alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples]
-    # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True)
-    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
-    rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
+    alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples] 透明度即体渲染公式中的Ti
 
+    # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True) 即代表公式中的Ti*(1−exp(−σ∗δ))
+    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+
+    rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
     depth_map = torch.sum(weights * z_vals, -1)
     disp_map = 1. / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
     acc_map = torch.sum(weights, -1)
@@ -385,8 +389,8 @@ def render_rays(ray_batch,
     bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
     near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
 
-    t_vals = torch.linspace(0., 1., steps=N_samples)
-    if not lindisp:
+    t_vals = torch.linspace(0., 1., steps=N_samples)  # 在 0-1 内生成 N_samples 个等差点
+    if not lindisp:  # 根据参数确定不同的采样方式,从而确定 Z 轴在边界框内的的具体位置
         z_vals = near * (1. - t_vals) + far * (t_vals)
     else:
         z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
@@ -409,30 +413,33 @@ def render_rays(ray_batch,
 
         z_vals = lower + (upper - lower) * t_rand
 
+    # 生成光线上每个采样点的位置
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
     #     raw = run_network(pts)
+    # 将光线上的每个点投入到 MLP 网络 network_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
     raw = network_query_fn(pts, viewdirs, network_fn)
+    # 对这些离散点进行体积渲染，即进行积分操作raw2outputs()
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                  pytest=pytest)
-
+    # 分层采样的细采样阶段
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
-        z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest)
+        z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest) # 根据权重 weight 判断这个点在物体表面附近的概率，重新采样
         z_samples = z_samples.detach()
 
         z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
         pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
-                                                            None]  # [N_rays, N_samples + N_importance, 3]
+                                                            None]  # [N_rays, N_samples + N_importance, 3]  生成新的采样点坐标
 
         run_fn = network_fn if network_fine is None else network_fine
         #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)
+        raw = network_query_fn(pts, viewdirs, run_fn)   # 生成新采样点的颜色密度
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
-                                                                     pytest=pytest)
+                                                                     pytest=pytest)  # 生成细化的像素点的颜色
 
     ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
     if retraw:
@@ -587,12 +594,12 @@ def train():
         print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
 
         ###########划分数据集#############
-        if not isinstance(i_test, list): # 如果 i_test 不是列表类型，则将其转换为列表
+        if not isinstance(i_test, list):  # 如果 i_test 不是列表类型，则将其转换为列表
             i_test = [i_test]
 
         # args.llffhold：'will take every 1/N images as LLFF test set, paper uses 8'
         # 将每 N 张图像作为 LLFF 测试集的采样间隔，默认为 8
-        if args.llffhold > 0: # 如果 args.llffhold 大于 0，则根据 args.llffhold 的值从头开始对图像进行采样，生成测试集的索引 i_test
+        if args.llffhold > 0:  # 如果 args.llffhold 大于 0，则根据 args.llffhold 的值从头开始对图像进行采样，生成测试集的索引 i_test
             print('Auto LLFF holdout,', args.llffhold)
             i_test = np.arange(images.shape[0])[::args.llffhold]
         # 验证集和测试集相同
@@ -739,14 +746,13 @@ def train():
     #############
 
     # Prepare raybatch tensor if batching random rays
-    N_rand = args.N_rand  # 开始读取光线以及光线对应的像素值
+    N_rand = args.N_rand  # 'batch size (number of random rays per gradient step)'
     use_batching = not args.no_batching  # 是否以批处理的形式生成光线
     if use_batching:
         # For random ray batching
-        # 是否从多个角度进行光线投射，核心在get_rays_np()函数，位于run_nerf-helpers 165中
         print('get rays')
         # get_rays_np()会返回光线的坐标ro和方向rd
-        rays = np.stack([get_rays_np(H, W, K, p) for p in poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3]
+        rays = np.stack([get_rays_np(H, W, K, p) for p in poses[:, :3, :4]], 0)  # [N, ro+rd, H, W, 3] N是光线数量
         print('done, concats')
         # 并入RGB信息，并进行变换
         rays_rgb = np.concatenate([rays, images[:, None]], 1)  # [N, ro+rd+rgb, H, W, 3]
@@ -790,8 +796,8 @@ def train():
         # 分批加载光线，大小为 N_rand
         if use_batching:
             # Random over all images
-            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
-            batch = torch.transpose(batch, 0, 1)
+            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3]
+            batch = torch.transpose(batch, 0, 1)  # [3,B,3]
 
             # 将光线和对应的像素点颜色分离，得到batch_rays[ro+rd, 4096, 3]和目标的rgb颜色target_s[4096, 3]
             batch_rays, target_s = batch[:2], batch[2]  # [2, B, 3]  [B, 3]
@@ -841,6 +847,7 @@ def train():
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
 
         #####  Core optimization loop  #####
+        # 体渲染，调用render函数
         # chunk=4096,batch_rays[2,4096,3]
         # 返回渲染出的一个batch的rgb，disp（视差图），acc（不透明度）和extras（其他信息）
         # rgb shape [4096, 3]刚好可以和target_s 对应上
@@ -863,11 +870,11 @@ def train():
             loss = loss + img_loss0
             psnr0 = mse2psnr(img_loss0)
 
-        loss.backward()
+        loss.backward()  # 损失反向传播
         optimizer.step()
 
         # NOTE: IMPORTANT!
-        ###   update learning rate   ###
+        ###   update learning rate   动态更新学习率  ###
         decay_rate = 0.1
         decay_steps = args.lrate_decay * 1000
         new_lrate = args.lrate * (decay_rate ** (global_step / decay_steps))
