@@ -436,7 +436,7 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
         #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)   # 生成新采样点的颜色密度
+        raw = network_query_fn(pts, viewdirs, run_fn)   ## 生成新采样点的颜色密度
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)  # 生成细化的像素点的颜色
