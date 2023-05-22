@@ -241,7 +241,229 @@ def create_nerf(args):
   ...
   ...
 ```
+### 4、体渲染模型
+这个模块我认为是最复杂的一个部分，其涉及到了多个函数，首先是 run_nerf.py 文件中的 train 函数中：
+```python
+  def train()
+        rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
+                                        verbose=i < 10, retraw=True,
+                                        **render_kwargs_train)
+```
+render()函数返回了渲染出的一个batch的rgb，disp（视差图），acc（不透明度）和extras（其他信息），其本身也在 run_nerf.py 文件中：
+```python
+def render(H, W, K, chunk=1024 * 32, rays=None, c2w=None, ndc=True,
+           near=0., far=1.,
+           use_viewdirs=False, c2w_staticcam=None,
+           **kwargs):
+    """Render rays 光线渲染
+    Args:
+      H: int. Height of image in pixels.
+      W: int. Width of image in pixels.
+      focal: float. Focal length of pinhole camera.
+            pinhole camera的焦距
+      chunk: int. Maximum number of rays to process simultaneously. Used to control maximum memory usage. Does not
+            affect final results.
+            同时处理的最大光线数。用于控制最大内存使用量，不影响最终结果
+      rays: array of shape [2, batch_size, 3]. Ray origin and direction for each example in batch.
+            形状为[2，batch_size，3]的数组。每个示例中光线的起点和方向
+      c2w: array of shape [3, 4]. Camera-to-world transformation matrix.
+            形状为[3，4]的数组。相机到真实世界的转换矩阵。
+      ndc: bool. If True, represent ray origin, direction in NDC coordinates.
+            布尔值。如果为True，则使用NDC坐标表示光线的起点和方向。
+      near: float or array of shape [batch_size]. Nearest distance for a ray.
+            浮点数或形状为[batch_size]的数组。光线的最近距离。
+      far: float or array of shape [batch_size]. Farthest distance for a ray.
+            浮点数或形状为[batch_size]的数组。光线的最远距离。
+      use_viewdirs: bool. If True, use viewing direction of a point in space in model.
+            布尔值。如果为True，则在模型中使用空间中点的观察方向。
+      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for camera while using other
+            c2w argument for viewing directions.
+            形状为[3，4]的数组。如果不为None，则在使用其他c2w参数作为观察方向时，使用此转换矩阵作为相机。
+    Returns:
+      rgb_map: [batch_size, 3]. Predicted RGB values for rays.光线的预测RGB值。
+      disp_map: [batch_size]. Disparity map. Inverse of depth.视差图。深度的倒数
+      acc_map: [batch_size]. Accumulated opacity (alpha) along a ray.沿光线的累积不透明度（alpha）
+      extras: dict with everything returned by render_rays().包含render_rays()返回的所有内容的字典。
+    """
+    if c2w is not None:
+        # special case to render full image 获取光线的原点rays_o和单位方向rays_d
+        rays_o, rays_d = get_rays(H, W, K, c2w)
+    else:
+        # use provided ray batch
+        rays_o, rays_d = rays
 
+    if use_viewdirs:  # # 如果使用视图方向，根据光线的 ray_d 计算单位方向作为 view_dirs
+        # provide ray directions as input
+        viewdirs = rays_d
+        if c2w_staticcam is not None:
+            # special case to visualize effect of viewdirs
+            rays_o, rays_d = get_rays(H, W, K, c2w_staticcam)
+        viewdirs = viewdirs / torch.norm(viewdirs, dim=-1, keepdim=True)  # 归一化
+        viewdirs = torch.reshape(viewdirs, [-1, 3]).float()  # 展平
+
+    sh = rays_d.shape  # [..., 3]
+    if ndc:
+        # for forward facing scenes 前向场景的情况
+        rays_o, rays_d = ndc_rays(H, W, K[0][0], 1., rays_o, rays_d)
+
+    # Create ray batch
+    rays_o = torch.reshape(rays_o, [-1, 3]).float()
+    rays_d = torch.reshape(rays_d, [-1, 3]).float()
+
+    # 生成光线的远近端，用于确定边界框，并将其聚合到 rays 中
+    near, far = near * torch.ones_like(rays_d[..., :1]), far * torch.ones_like(rays_d[..., :1])
+    rays = torch.cat([rays_o, rays_d, near, far], -1)
+    if use_viewdirs:  # 视图方向聚合到光线中
+        rays = torch.cat([rays, viewdirs], -1)
+
+    # Render and reshape
+    # 将计算出的ray_o、ray_d、near、far、viewdirs 等并入rays中后输入批处理函数batchify_rays() 61行
+    all_ret = batchify_rays(rays, chunk, **kwargs)
+    for k in all_ret:
+        k_sh = list(sh[:-1]) + list(all_ret[k].shape[1:])
+        all_ret[k] = torch.reshape(all_ret[k], k_sh)
+
+    k_extract = ['rgb_map', 'disp_map', 'acc_map']
+    ret_list = [all_ret[k] for k in k_extract]
+    ret_dict = {k: all_ret[k] for k in all_ret if k not in k_extract}
+    return ret_list + [ret_dict]
+```
+不难看出，其中使用到了光线生成中的get_rays()函数来获取光线的原点rays_o和单位方向rays_d，中间对不同数据集的不同情况进行了具体处理，并将计算出的ray_o、ray_d、near、far、viewdirs 等并入rays中后输入批处理函数batchify_rays()，批处理函数batchify_rays()也在 run_nerf.py 文件中：
+```python
+def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
+    """Render rays in smaller minibatches to avoid OOM.
+    这段代码的作用是将传入的光线数据rays_flat按照指定大小的批次(chunk)进行渲染，然后将渲染结果存储在一个字典中并返回。这样做可以避免在渲染大量光
+    线时出现内存溢出的问题。
+    """
+    all_ret = {}
+    for i in range(0, rays_flat.shape[0], chunk):
+        ret = render_rays(rays_flat[i:i + chunk], **kwargs)  # 关键函数render_rays()
+        for k in ret:
+            if k not in all_ret:
+                all_ret[k] = []
+            all_ret[k].append(ret[k])
+
+    all_ret = {k: torch.cat(all_ret[k], 0) for k in all_ret}
+    return all_ret
+```
+该函数指向了一个关键的函数render_rays()：
+```python
+def render_rays(ray_batch,
+                network_fn,
+                network_query_fn,
+                N_samples,
+                retraw=False,
+                lindisp=False,
+                perturb=0.,
+                N_importance=0,
+                network_fine=None,
+                white_bkgd=False,
+                raw_noise_std=0.,
+                verbose=False,
+                pytest=False):
+    """Volumetric rendering.
+    Args:
+      ray_batch: array of shape [batch_size, ...]. All information necessary
+        for sampling along a ray, including: ray origin, ray direction, min
+        dist, max dist, and unit-magnitude viewing direction.
+      network_fn: function. Model for predicting RGB and density at each point
+        in space.
+      network_query_fn: function used for passing queries to network_fn.
+      N_samples: int. Number of different times to sample along each ray.
+      retraw: bool. If True, include model's raw, unprocessed predictions.
+      lindisp: bool. If True, sample linearly in inverse depth rather than in depth.
+      perturb: float, 0 or 1. If non-zero, each ray is sampled at stratified
+        random points in time.
+      N_importance: int. Number of additional times to sample along each ray.
+        These samples are only passed to network_fine.
+      network_fine: "fine" network with same spec as network_fn.
+      white_bkgd: bool. If True, assume a white background.
+      raw_noise_std: ...
+      verbose: bool. If True, print more debugging info.
+    Returns:
+      rgb_map: [num_rays, 3]. Estimated RGB color of a ray. Comes from fine model.
+      disp_map: [num_rays]. Disparity map. 1 / depth.
+      acc_map: [num_rays]. Accumulated opacity along each ray. Comes from fine model.
+      raw: [num_rays, num_samples, 4]. Raw predictions from model.
+      rgb0: See rgb_map. Output for coarse model.
+      disp0: See disp_map. Output for coarse model.
+      acc0: See acc_map. Output for coarse model.
+      z_std: [num_rays]. Standard deviation of distances along ray for each
+        sample.
+    """
+    N_rays = ray_batch.shape[0]
+    rays_o, rays_d = ray_batch[:, 0:3], ray_batch[:, 3:6]  # [N_rays, 3] each
+    viewdirs = ray_batch[:, -3:] if ray_batch.shape[-1] > 8 else None
+    bounds = torch.reshape(ray_batch[..., 6:8], [-1, 1, 2])
+    near, far = bounds[..., 0], bounds[..., 1]  # [-1,1]
+
+    t_vals = torch.linspace(0., 1., steps=N_samples)  # 在 0-1 内生成 N_samples 个等差点
+    if not lindisp:  # 根据参数确定不同的采样方式,从而确定 Z 轴在边界框内的的具体位置
+        z_vals = near * (1. - t_vals) + far * (t_vals)
+    else:
+        z_vals = 1. / (1. / near * (1. - t_vals) + 1. / far * (t_vals))
+
+    z_vals = z_vals.expand([N_rays, N_samples])
+
+    if perturb > 0.:
+        # get intervals between samples
+        mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+        upper = torch.cat([mids, z_vals[..., -1:]], -1)
+        lower = torch.cat([z_vals[..., :1], mids], -1)
+        # stratified samples in those intervals
+        t_rand = torch.rand(z_vals.shape)
+
+        # Pytest, overwrite u with numpy's fixed random numbers
+        if pytest:
+            np.random.seed(0)
+            t_rand = np.random.rand(*list(z_vals.shape))
+            t_rand = torch.Tensor(t_rand)
+
+        z_vals = lower + (upper - lower) * t_rand
+
+    # 生成光线上每个采样点的位置
+    pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
+
+    #     raw = run_network(pts)
+    # 将光线上的每个点投入到 MLP 网络 network_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
+    raw = network_query_fn(pts, viewdirs, network_fn)
+    # 对这些离散点进行体积渲染，即进行积分操作raw2outputs()
+    rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
+                                                                 pytest=pytest)
+    # 分层采样的细采样阶段
+    if N_importance > 0:
+        rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
+
+        z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+        z_samples = sample_pdf(z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.), pytest=pytest) # 根据权重 weight 判断这个点在物体表面附近的概率，重新采样
+        z_samples = z_samples.detach()
+
+        z_vals, _ = torch.sort(torch.cat([z_vals, z_samples], -1), -1)
+        pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :,
+                                                            None]  # [N_rays, N_samples + N_importance, 3]  生成新的采样点坐标
+
+        run_fn = network_fn if network_fine is None else network_fine
+        #         raw = run_network(pts, fn=run_fn)
+        raw = network_query_fn(pts, viewdirs, run_fn)   # 生成新采样点的颜色密度
+
+        rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
+                                                                     pytest=pytest)  # 生成细化的像素点的颜色
+
+    ret = {'rgb_map': rgb_map, 'disp_map': disp_map, 'acc_map': acc_map}
+    if retraw:
+        ret['raw'] = raw
+    if N_importance > 0:
+        ret['rgb0'] = rgb_map_0
+        ret['disp0'] = disp_map_0
+        ret['acc0'] = acc_map_0
+        ret['z_std'] = torch.std(z_samples, dim=-1, unbiased=False)  # [N_rays]
+
+    for k in ret:
+        if (torch.isnan(ret[k]).any() or torch.isinf(ret[k]).any()) and DEBUG:
+            print(f"! [Numerical Error] {k} contains nan or inf.")
+
+    return ret
+```
 ----
 
 ## 以下内容为yenchenlin博士改写的基于pytorch的nerf[仓库](https://github.com/yenchenlin/nerf-pytorch)中的README
