@@ -362,10 +362,11 @@ def render_rays(ray_batch,
                 verbose=False,
                 pytest=False):
     """Volumetric rendering.
-    Args:
+    Args参数:
       ray_batch: array of shape [batch_size, ...]. All information necessary
         for sampling along a ray, including: ray origin, ray direction, min
-        dist, max dist, and unit-magnitude viewing direction.
+        dist, max dist, and unit-magnitude viewing direction.包含沿着光线采样
+        所需的所有信息，包括光线起点、方向、最小距离、最大距离和单位方向。
       network_fn: function. Model for predicting RGB and density at each point
         in space.
       network_query_fn: function used for passing queries to network_fn.
@@ -380,12 +381,12 @@ def render_rays(ray_batch,
       white_bkgd: bool. If True, assume a white background.
       raw_noise_std: ...
       verbose: bool. If True, print more debugging info.
-    Returns:
-      rgb_map: [num_rays, 3]. Estimated RGB color of a ray. Comes from fine model.
-      disp_map: [num_rays]. Disparity map. 1 / depth.
-      acc_map: [num_rays]. Accumulated opacity along each ray. Comes from fine model.
+    Returns返回值:
+      颜色预测值rgb_map: [num_rays, 3]. Estimated RGB color of a ray. Comes from fine model.
+      深度预测值disp_map: [num_rays]. Disparity map. 1 / depth.
+      不透明度预测值acc_map: [num_rays]. Accumulated opacity along each ray. Comes from fine model.
       raw: [num_rays, num_samples, 4]. Raw predictions from model.
-      rgb0: See rgb_map. Output for coarse model.
+      粗网络的rgb0: See rgb_map. Output for coarse model.
       disp0: See disp_map. Output for coarse model.
       acc0: See acc_map. Output for coarse model.
       z_std: [num_rays]. Standard deviation of distances along ray for each
@@ -424,8 +425,9 @@ def render_rays(ray_batch,
     # 生成光线上每个采样点的位置
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
-    #     raw = run_network(pts)
-    # 将光线上的每个点投入到 MLP 网络 network_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
+    ################## 重要 #####################
+    # raw = run_network(pts)
+    # 将光线上的每个点投入到 MLP 网络 network_query_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
     raw = network_query_fn(pts, viewdirs, network_fn)
     # 对这些离散点进行体积渲染，即进行积分操作raw2outputs()
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
