@@ -362,35 +362,39 @@ def render_rays(ray_batch,
                 verbose=False,
                 pytest=False):
     """Volumetric rendering.
-    Args参数:
+    Args:
       ray_batch: array of shape [batch_size, ...]. All information necessary
         for sampling along a ray, including: ray origin, ray direction, min
         dist, max dist, and unit-magnitude viewing direction.包含沿着光线采样
         所需的所有信息，包括光线起点、方向、最小距离、最大距离和单位方向。
       network_fn: function. Model for predicting RGB and density at each point
-        in space.
-      network_query_fn: function used for passing queries to network_fn.
-      N_samples: int. Number of different times to sample along each ray.
+        in space. NeRF模型，用于预测每个点的RGB和体密度——定义于create_nerf()
+      network_query_fn: function used for passing queries to network_fn.用于向
+        network_fn查询参数的函数——定义于create_nerf()
+      N_samples: int. Number of different times to sample along each ray.沿着每条
+        光线的采样次数
       retraw: bool. If True, include model's raw, unprocessed predictions.
       lindisp: bool. If True, sample linearly in inverse depth rather than in depth.
       perturb: float, 0 or 1. If non-zero, each ray is sampled at stratified
         random points in time.
       N_importance: int. Number of additional times to sample along each ray.
-        These samples are only passed to network_fine.
+        These samples are only passed to network_fine.额外采样数，仅传递给network_fine
       network_fine: "fine" network with same spec as network_fn.
       white_bkgd: bool. If True, assume a white background.
       raw_noise_std: ...
       verbose: bool. If True, print more debugging info.
-    Returns返回值:
-      颜色预测值rgb_map: [num_rays, 3]. Estimated RGB color of a ray. Comes from fine model.
-      深度预测值disp_map: [num_rays]. Disparity map. 1 / depth.
-      不透明度预测值acc_map: [num_rays]. Accumulated opacity along each ray. Comes from fine model.
-      raw: [num_rays, num_samples, 4]. Raw predictions from model.
-      粗网络的rgb0: See rgb_map. Output for coarse model.
-      disp0: See disp_map. Output for coarse model.
-      acc0: See acc_map. Output for coarse model.
+    Returns:
+      rgb_map: [num_rays, 3]. Estimated RGB color of a ray. Comes from fine model.
+        fine网络预测的rgb结果
+      disp_map: [num_rays]. Disparity map. 1 / depth. 预测的视差图
+      acc_map: [num_rays]. Accumulated opacity along each ray. Comes from fine model.
+        fine网络预测的累积的不透明度
+      raw: [num_rays, num_samples, 4]. Raw predictions from model.原始模型预测
+      rgb0: See rgb_map. Output for coarse model.粗糙模型输出的rgb
+      disp0: See disp_map. Output for coarse model.粗糙模型输出的视差图
+      acc0: See acc_map. Output for coarse model.粗糙模型输出的不透明度
       z_std: [num_rays]. Standard deviation of distances along ray for each
-        sample.
+        sample.每个样本沿着光线的距离的标准差
     """
     N_rays = ray_batch.shape[0]
     rays_o, rays_d = ray_batch[:, 0:3], ray_batch[:, 3:6]  # [N_rays, 3] each
@@ -425,7 +429,7 @@ def render_rays(ray_batch,
     # 生成光线上每个采样点的位置
     pts = rays_o[..., None, :] + rays_d[..., None, :] * z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
-    ################## 重要 #####################
+    ########### 重要 ###########
     # raw = run_network(pts)
     # 将光线上的每个点投入到 MLP 网络 network_query_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
     raw = network_query_fn(pts, viewdirs, network_fn)
@@ -446,7 +450,7 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
         #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)   # 生成新采样点的颜色密度
+        raw = network_query_fn(pts, viewdirs, run_fn)   ## 生成新采样点的颜色密度
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
                                                                      pytest=pytest)  # 生成细化的像素点的颜色
@@ -466,6 +470,73 @@ def render_rays(ray_batch,
 
     return ret
 ```
+在该函数中最重要的一步是将 MLP 预测的结果进行体渲染：
+```python
+rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
+```
+调用了 raw2outputs() 函数，该函数声明了体渲染的具体步骤：
+```python
+def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
+    """Transforms model's predictions to semantically meaningful values.
+    将模型预测值转化为语义上有意义的值
+    Args:
+        raw: [num_rays, num_samples along ray, 4]. Prediction from model. 模型预测值
+        z_vals: [num_rays, num_samples along ray]. Integration time.
+        rays_d: [num_rays, 3]. Direction of each ray. 每条光线的方向
+    Returns:
+        rgb_map: [num_rays, 3]. Estimated RGB color of a ray. 光线 RGB 预测值
+        disp_map: [num_rays]. Disparity map. Inverse of depth map. 视差图
+        acc_map: [num_rays]. Sum of weights along each ray. 不透明度
+        weights: [num_rays, num_samples]. Weights assigned to each sampled color. 权重
+        depth_map: [num_rays]. Estimated distance to object. 深度图
+    """
+    # 匿名函数raw2alpha 代表了体渲染公式中的 1−exp(−σ∗δ)
+    raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
+
+    dists = z_vals[..., 1:] - z_vals[..., :-1]  # 计算两点Z轴之间的距离
+    dists = torch.cat([dists, torch.Tensor([1e10]).expand(dists[..., :1].shape)], -1)  # [N_rays, N_samples]
+
+    dists = dists * torch.norm(rays_d[..., None, :], dim=-1)    # 将 Z 轴之间的距离转换为实际距离
+
+    rgb = torch.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3] 每个点的 RGB 值
+    noise = 0.
+    if raw_noise_std > 0.:
+        noise = torch.randn(raw[..., 3].shape) * raw_noise_std
+
+        # Overwrite randomly sampled data if pytest
+        if pytest:
+            np.random.seed(0)
+            noise = np.random.rand(*list(raw[..., 3].shape)) * raw_noise_std
+            noise = torch.Tensor(noise)
+
+    alpha = raw2alpha(raw[..., 3] + noise, dists)  # [N_rays, N_samples] 透明度即体渲染公式中的Ti
+
+    # weights = alpha * tf.math.cumprod(1.-alpha + 1e-10, -1, exclusive=True) 即代表公式中的Ti*(1−exp(−σ∗δ))
+    weights = alpha * torch.cumprod(torch.cat([torch.ones((alpha.shape[0], 1)), 1. - alpha + 1e-10], -1), -1)[:, :-1]
+
+    rgb_map = torch.sum(weights[..., None] * rgb, -2)  # [N_rays, 3]
+    depth_map = torch.sum(weights * z_vals, -1)
+    disp_map = 1. / torch.max(1e-10 * torch.ones_like(depth_map), depth_map / torch.sum(weights, -1))
+    acc_map = torch.sum(weights, -1)
+
+    if white_bkgd:
+        rgb_map = rgb_map + (1. - acc_map[..., None])
+
+    return rgb_map, disp_map, acc_map, weights, depth_map
+```
+## 5、总结
+按照 train() 函数的顺序到此为止就实现了：
+1. 载入数据集，并根据数据集类型载入数据。
+
+2. 模型初始化，包括了参数初始化，网络模型初始化，编码函数初始化
+
+3. 根据数据集生成光线，对光线进行格式化操作
+
+4. 将光线输入进入 MLP 网络得到预测结果，将预测结果进行体渲染得到照片级别的重建结果
+
+5. 求 loss，优化算法
+                                                                 
+
 ----
 
 ## 以下内容为yenchenlin博士改写的基于pytorch的nerf[仓库](https://github.com/yenchenlin/nerf-pytorch)中的README

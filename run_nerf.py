@@ -294,16 +294,17 @@ def create_nerf(args):
 
 def raw2outputs(raw, z_vals, rays_d, raw_noise_std=0, white_bkgd=False, pytest=False):
     """Transforms model's predictions to semantically meaningful values.
+    将模型预测值转化为语义上有意义的值
     Args:
-        raw: [num_rays, num_samples along ray, 4]. Prediction from model.
+        raw: [num_rays, num_samples along ray, 4]. Prediction from model. 模型预测值
         z_vals: [num_rays, num_samples along ray]. Integration time.
-        rays_d: [num_rays, 3]. Direction of each ray.
+        rays_d: [num_rays, 3]. Direction of each ray. 每条光线的方向
     Returns:
-        rgb_map: [num_rays, 3]. Estimated RGB color of a ray.
-        disp_map: [num_rays]. Disparity map. Inverse of depth map.
-        acc_map: [num_rays]. Sum of weights along each ray.
-        weights: [num_rays, num_samples]. Weights assigned to each sampled color.
-        depth_map: [num_rays]. Estimated distance to object.
+        rgb_map: [num_rays, 3]. Estimated RGB color of a ray. 光线 RGB 预测值
+        disp_map: [num_rays]. Disparity map. Inverse of depth map. 视差图
+        acc_map: [num_rays]. Sum of weights along each ray. 不透明度
+        weights: [num_rays, num_samples]. Weights assigned to each sampled color. 权重
+        depth_map: [num_rays]. Estimated distance to object. 深度图
     """
     # 匿名函数raw2alpha 代表了体渲染公式中的 1−exp(−σ∗δ)
     raw2alpha = lambda raw, dists, act_fn=F.relu: 1. - torch.exp(-act_fn(raw) * dists)
@@ -423,7 +424,7 @@ def render_rays(ray_batch,
 
     ########### 重要 ###########
     # raw = run_network(pts)
-    # 将光线上的每个点投入到 MLP 网络 network_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
+    # 将光线上的每个点投入到 MLP 网络 network_query_fn 中前向传播得到每个点对应的 （RGB，A）并聚合到raw中
     raw = network_query_fn(pts, viewdirs, network_fn)
     # 对这些离散点进行体积渲染，即进行积分操作raw2outputs()
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd,
